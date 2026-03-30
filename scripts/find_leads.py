@@ -10,6 +10,7 @@ import sys
 import os
 import csv
 import json
+import shutil
 import time
 import re
 import argparse
@@ -24,12 +25,18 @@ except ImportError:
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
 LEADS_CSV = Path("/root/.picoclaw/workspace/state/outreach/leads.csv")
-CSV_HEADERS = ["created_at", "name", "firm", "email", "city", "state", "notes", "status"]
+CSV_HEADERS = ["created_at", "name", "firm", "email", "city", "state", "type", "notes", "status"]
 
+# Ordered by outreach priority
 TARGET_TYPES = [
-    "real estate attorney",
-    "title company",
-    "mortgage broker",
+    "probate attorney",
+    "immigration lawyer",
+    "solo practice attorney",
+    "new law firm",
+    "tech-friendly law firm",
+    "estate planning attorney",
+    "family law attorney",
+    "general practice law firm",
 ]
 
 DDGO_URL = "https://html.duckduckgo.com/html/"
@@ -47,9 +54,14 @@ EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
 # ── CSV helpers ───────────────────────────────────────────────────────────────
 
 def ensure_csv() -> set:
-    """Create CSV with headers if needed; return set of existing firm names."""
+    """Create CSV with headers if needed; return set of existing firm names.
+
+    Also migrates existing CSVs that are missing the 'type' column by
+    rewriting them with the new header and an empty value for that field.
+    """
     LEADS_CSV.parent.mkdir(parents=True, exist_ok=True)
     existing_firms: set = set()
+
     if not LEADS_CSV.exists():
         with open(LEADS_CSV, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
@@ -58,10 +70,24 @@ def ensure_csv() -> set:
 
     with open(LEADS_CSV, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
-        for row in reader:
-            firm = (row.get("firm") or "").strip().lower()
-            if firm:
-                existing_firms.add(firm)
+        rows = list(reader)
+        existing_cols = reader.fieldnames or []
+
+    # Migrate: rewrite if any expected column is missing
+    if set(CSV_HEADERS) != set(existing_cols):
+        tmp = LEADS_CSV.with_suffix(".tmp")
+        with open(tmp, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=CSV_HEADERS, extrasaction="ignore")
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({k: row.get(k, "") for k in CSV_HEADERS})
+        shutil.move(str(tmp), str(LEADS_CSV))
+        print("  [info] Migrated leads.csv to include new 'type' column.")
+
+    for row in rows:
+        firm = (row.get("firm") or "").strip().lower()
+        if firm:
+            existing_firms.add(firm)
     return existing_firms
 
 
@@ -137,7 +163,7 @@ def build_lead(result: dict, city: str, state: str, target_type: str) -> dict:
     # Strip trailing " - " separators often appended by search engines
     firm = re.sub(r"\s*[-|–]\s*.*$", "", firm).strip()
 
-    notes = f"Found via DDG: {target_type} | {result['url']}"
+    notes = f"Found via DDG: {result['url']}"
     if len(notes) > 255:
         notes = notes[:252] + "..."
 
@@ -148,6 +174,7 @@ def build_lead(result: dict, city: str, state: str, target_type: str) -> dict:
         "email": email,
         "city": city,
         "state": state,
+        "type": target_type,
         "notes": notes,
         "status": "new",
     }
